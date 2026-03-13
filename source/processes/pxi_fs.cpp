@@ -18,6 +18,7 @@
 #include <range/v3/algorithm/copy.hpp>
 #include <range/v3/algorithm/equal.hpp>
 #include <range/v3/algorithm/fill.hpp>
+#include <range/v3/algorithm/find.hpp>
 #include <range/v3/view/counted.hpp>
 #include <range/v3/view/reverse.hpp>
 #include <range/v3/view/zip.hpp>
@@ -537,7 +538,7 @@ std::unique_ptr<File> OpenNCCHSubFile(Thread& thread, Platform::FS::ProgramInfo 
         }
 
         auto ncch_filename =    GetRootDataDirectory(thread.GetOS().settings) /
-                                fmt::format("{:08x}/{:08x}/content/{:08x}.cxi",
+                                fmt::format("title/{:08x}/{:08x}/content/{:08x}.cxi",
                                             program_info.program_id >> 32, program_info.program_id & 0xFFFFFFFF, content_id);
         ncch = std::make_unique<HostFile>(ncch_filename.string(), HostFile::Default);
     } else if (gamecard && program_info.media_type == 2) {
@@ -609,16 +610,24 @@ protected:
             auto sub_file = OpenNCCHSubFile(thread, program_info, content_id, sub_file_type, std::basic_string_view<uint8_t> { path.data() + 0xc, 8 }, gamecard);
             return std::make_pair(RESULT_OK, std::move(sub_file));
         } catch (const std::runtime_error& err) {
+            constexpr std::array<uint64_t, 19> bootstrap_bypass_titles = {
+                /* Camera app, probed during initial setup */
+                0x00040010'00020400, 0x00040010'00021400, 0x00040010'00022400,
+                0x00040010'00026400, 0x00040010'00027400, 0x00040010'00028400,
+                /* Nintendo Zone app, probed by HOME Menu on system version 3.0.0 */
+                0x00040010'00020B00, 0x00040010'00021B00, 0x00040010'00022B00, 
+                /* Internet Browser, probed by HOME Menu on system version 9.2.0 */
+                0x00040030'00008802, 0x00040030'00009402, 0x00040030'00009d00,
+                0x00040030'0000A602, 0x00040030'0000AE02, 0x00040030'0000B602,
+                /* In-app Miiverse posting applet, probed by HOME Menu on system versions >= 10.5.0 */
+                0x00040030'00008302, 0x00040030'00008B02, 0x00040030'0000BA02,
+                0x00040030'00000000,
+            };
             if (std::string_view { err.what() }.starts_with("Tried to access non-existing title")) {
                 // Report "not found" for some specific titles that may be
                 // probed by system titles but which won't be present after
                 // NAND bootstrap from gamecard update partitions.
-                // 0x4001000022400: Camera app, probed during initial system setup
-                // 0x4003000009d02: Internet Browser, probed by HOME Menu on system version 9.2.0
-                // 0x400300000ba02: In-app Miiverse posting applet, probed by HOME Menu on system versions >= 10.5.0
-                if (program_info.program_id == 0x4001000022400 ||
-                    program_info.program_id == 0x4003000009d02 ||
-                    program_info.program_id == 0x400300000ba02) {
+                if (ranges::find(bootstrap_bypass_titles, program_info.program_id)) {
                     return std::make_pair(0xc8804478, std::unique_ptr<File> { });
                 }
             }

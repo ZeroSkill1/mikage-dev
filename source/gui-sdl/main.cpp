@@ -4,6 +4,7 @@
 
 #include "platform/file_formats/cia.hpp"
 #include "platform/file_formats/ncch.hpp"
+#include "platform/config.hpp"
 #include "processes/pxi_fs.hpp"
 #define VULKAN_HPP_DISPATCH_LOADER_DYNAMIC 1
 
@@ -234,142 +235,217 @@ int main(int argc, char* argv[]) {
 
     auto keydb = LoadKeyDatabase(*frontend_logger, "./aes_keys.txt");
 
-if (bootstrap_nand) // Experimental system bootstrapper
-    try {
-        // TODO: Replicate the functionality of ns:s's CardUpdateInitialize on boot:
-        //       Compare the title version of CVer in emulated NAND against the title
-        //       version in the TMD of the CVer CIA in the game update partition.
+    if (bootstrap_nand) { // Experimental system bootstrapper
+        // Note: These lists are ordered by system region!
+        constexpr std::array<uint64_t, 7> cver_title_ids = {
+            0x000400db'00017202, 0x000400db'00017302,
+            0x000400db'00017102, 0x000400db'00017102,
+            0x000400db'00017402, 0x000400db'00017502,
+            0x000400db'00017602,
+        };
+        
+        constexpr std::array<uint64_t, 7> nver_title_ids = {
+            0x000400db'00016202, 0x000400db'00016302,
+            0x000400db'00016102, 0x000400db'00016102,
+            0x000400db'00016402, 0x000400db'00016502,
+            0x000400db'00016602,
+        };
+        
+        constexpr std::array<uint64_t, 7> system_font_title_ids = {
+            0x0004009b'00014002, 0x0004009b'00014002,
+            0x0004009b'00014002, 0x0004009b'00014002,
+            0x0004009b'00014102, 0x0004009b'00014202,
+            0x0004009b'00014302,
+        };
+        
+        constexpr std::array<uint64_t, 7> eula_title_ids = {
+            0x0004009b'00013202, 0x0004009b'00013302,
+            0x0004009b'00013102, 0x0004009b'00013102,
+            0x0004009b'00013402, 0x0004009b'00013502,
+            0x0004009b'00013602,
+        };
+        
+        constexpr std::array<uint64_t, 3> common_sysdata_title_ids = {
+             0x0004009b'00010202, 0x000400db'00010302, 0x0004009b'00010402,
+        };
+        
 
-        auto gamecard = LoadGameCard(*frontend_logger, settings);
-        auto update_partition = gamecard->GetPartitionFromId(Loader::NCSDPartitionId::UpdateData);
-        if (!update_partition) {
-            throw std::runtime_error("Couldn't find update partition");
-        }
+        Platform::Config::SystemRegion sysregion = Platform::Config::SystemRegion::Invalid;
+        bool had_eula = false;
 
-        auto file_context = HLE::PXI::FS::FileContext { *frontend_logger };
-        auto [result] = (*update_partition)->OpenReadOnly(file_context);
-        if (result != HLE::OS::RESULT_OK) {
-            throw std::runtime_error("Failed to open update partition");
-        }
-
-        // Open RomFS for update partition
-        auto romfs = HLE::PXI::FS::NCCHOpenExeFSSection(*frontend_logger, file_context, keydb, std::move(*update_partition), 0, {});
-
-        FileFormat::RomFSLevel3Header level3_header;
-        const uint32_t lv3_offset = 0x1000;
-
-        std::tie(result) = romfs->OpenReadOnly(file_context);
-        uint32_t bytes_read;
-        std::tie(result, bytes_read) = romfs->Read(file_context, lv3_offset, sizeof(level3_header), HLE::PXI::FS::FileBufferInHostMemory(level3_header));
-        if (result != HLE::OS::RESULT_OK) {
-            throw std::runtime_error("Failed to read update partition RomFS");
-        }
-
-        std::filesystem::path content_dir = settings.get<Settings::PathDataDir>() + "/data";
-
-        for (uint32_t metadata_offset = 0; metadata_offset < level3_header.file_metadata_size;) {
-            FileFormat::RomFSFileMetadata file_metadata;
-            std::tie(result, bytes_read) = romfs->Read(file_context, lv3_offset + level3_header.file_metadata_offset + metadata_offset, sizeof(file_metadata), HLE::PXI::FS::FileBufferInHostMemory(file_metadata));
-            if (result != HLE::OS::RESULT_OK) {
-                throw std::runtime_error("Failed to read file metadata");
+        try {
+            // TODO: Replicate the functionality of ns:s's CardUpdateInitialize on boot:
+            //       Compare the title version of CVer in emulated NAND against the title
+            //       version in the TMD of the CVer CIA in the game update partition.
+    
+            auto gamecard = LoadGameCard(*frontend_logger, settings);
+            auto update_partition = gamecard->GetPartitionFromId(Loader::NCSDPartitionId::UpdateData);
+            if (!update_partition) {
+                throw std::runtime_error("Couldn't find update partition");
             }
-            metadata_offset += sizeof(file_metadata);
-
-            std::u16string filename;
-            filename.resize((file_metadata.name_size + 1) / 2);
-            std::tie(result, bytes_read) = romfs->Read(file_context, lv3_offset + level3_header.file_metadata_offset + metadata_offset, file_metadata.name_size, HLE::PXI::FS::FileBufferInHostMemory(filename.data(), file_metadata.name_size));
+    
+            auto file_context = HLE::PXI::FS::FileContext { *frontend_logger };
+            auto [result] = (*update_partition)->OpenReadOnly(file_context);
             if (result != HLE::OS::RESULT_OK) {
-                throw std::runtime_error("Failed to read filename from metadata");
+                throw std::runtime_error("Failed to open update partition");
             }
-
-            std::wstring_convert<std::codecvt_utf8_utf16<char16_t>,char16_t> conversion;
-            std::string filename2 { conversion.to_bytes(filename) };
-
-            fprintf(stderr, "FOUND FILENAME: %s\n", filename2.c_str());
-
-            if (filename2.ends_with(".cia")) {
-                auto cia_file = std::make_unique<HLE::PXI::FS::FileView>(std::move(romfs), lv3_offset + level3_header.file_data_offset + file_metadata.data_offset, file_metadata.data_size);
-                FileFormat::CIAHeader cia_header;
-                std::tie(result, bytes_read) = cia_file->Read(file_context, 0, sizeof(cia_header), HLE::PXI::FS::FileBufferInHostMemory(cia_header));
+    
+            // Open RomFS for update partition
+            auto romfs = HLE::PXI::FS::NCCHOpenExeFSSection(*frontend_logger, file_context, keydb, std::move(*update_partition), 0, {});
+    
+            FileFormat::RomFSLevel3Header level3_header;
+            const uint32_t lv3_offset = 0x1000;
+    
+            std::tie(result) = romfs->OpenReadOnly(file_context);
+            uint32_t bytes_read;
+            std::tie(result, bytes_read) = romfs->Read(file_context, lv3_offset, sizeof(level3_header), HLE::PXI::FS::FileBufferInHostMemory(level3_header));
+            if (result != HLE::OS::RESULT_OK) {
+                throw std::runtime_error("Failed to read update partition RomFS");
+            }
+    
+            std::filesystem::path content_dir = settings.get<Settings::PathDataDir>() + "/data";
+            
+            for (uint32_t metadata_offset = 0; metadata_offset < level3_header.file_metadata_size;) {
+                FileFormat::RomFSFileMetadata file_metadata;
+                std::tie(result, bytes_read) = romfs->Read(file_context, lv3_offset + level3_header.file_metadata_offset + metadata_offset, sizeof(file_metadata), HLE::PXI::FS::FileBufferInHostMemory(file_metadata));
                 if (result != HLE::OS::RESULT_OK) {
-                    throw std::runtime_error("Failed to read file data");
+                    throw std::runtime_error("Failed to read file metadata");
                 }
-
-                fprintf(stderr, "CIA header size: %#x\n", cia_header.header_size);
-
-                InstallCIA(content_dir, *frontend_logger, keydb, file_context, *cia_file);
-
-                romfs = cia_file->ReleaseParentAndClose();
+                metadata_offset += sizeof(file_metadata);
+    
+                std::u16string filename;
+                filename.resize((file_metadata.name_size + 1) / 2);
+                std::tie(result, bytes_read) = romfs->Read(file_context, lv3_offset + level3_header.file_metadata_offset + metadata_offset, file_metadata.name_size, HLE::PXI::FS::FileBufferInHostMemory(filename.data(), file_metadata.name_size));
+                if (result != HLE::OS::RESULT_OK) {
+                    throw std::runtime_error("Failed to read filename from metadata");
+                }
+    
+                std::wstring_convert<std::codecvt_utf8_utf16<char16_t>,char16_t> conversion;
+                std::string filename2 { conversion.to_bytes(filename) };
+    
+                fprintf(stderr, "FOUND FILENAME: %s\n", filename2.c_str());
+    
+                if (filename2.ends_with(".cia")) {
+                    uint64_t cur_title_id = 0;
+                    auto parse_res = std::from_chars(filename2.data(), filename2.data() + 16, cur_title_id, 16);
+                    if (parse_res.ptr != filename2.data() + 16) {
+                        throw std::runtime_error("Could not parse title ID in update partition");
+                    }
+                    
+                    auto cver_it = std::find(cver_title_ids.begin(), cver_title_ids.end(), cur_title_id);
+                    if (cver_it != cver_title_ids.end()) {
+                        if (sysregion != Platform::Config::SystemRegion::Invalid) {
+                            throw std::runtime_error("Detected multiple CVer titles in update partition");
+                        }
+                        
+                        sysregion = static_cast<decltype(sysregion)>(std::distance(cver_title_ids.begin(), cver_it));
+                    }
+                    
+                    if (!had_eula) {
+                        had_eula = std::find(eula_title_ids.begin(), eula_title_ids.end(), cur_title_id) != eula_title_ids.end();
+                    }
+                    
+                    auto cia_file = std::make_unique<HLE::PXI::FS::FileView>(std::move(romfs), lv3_offset + level3_header.file_data_offset + file_metadata.data_offset, file_metadata.data_size);
+                    FileFormat::CIAHeader cia_header;
+                    std::tie(result, bytes_read) = cia_file->Read(file_context, 0, sizeof(cia_header), HLE::PXI::FS::FileBufferInHostMemory(cia_header));
+                    if (result != HLE::OS::RESULT_OK) {
+                        throw std::runtime_error("Failed to read file data");
+                    }
+    
+                    fprintf(stderr, "CIA header size: %#x\n", cia_header.header_size);
+    
+                    InstallCIA(content_dir / "title", *frontend_logger, keydb, file_context, *cia_file);
+    
+                    romfs = cia_file->ReleaseParentAndClose();
+                }
+    
+                // Align filename size to 4 bytes
+                metadata_offset += (file_metadata.name_size + 3) & ~3;
             }
-
-            // Align filename size to 4 bytes
-            metadata_offset += (file_metadata.name_size + 3) & ~3;
+            
+            if (sysregion == Platform::Config::SystemRegion::Invalid) {
+                throw std::runtime_error("Could not find a CVer title in update partition");
+            }
+            
+            std::filesystem::create_directories(content_dir / "title/000400db");
+            std::filesystem::create_directories(content_dir / "title/0004009b");
+            
+            auto copy_title = [&settings, &content_dir](uint64_t title_id) -> void {
+                std::filesystem::copy( settings.get<Settings::PathImmutableDataDir>() + fmt::format("/nand/title/{:08x}/{:08x}", title_id >> 32, title_id & 0xFFFFFFFF), 
+                                       content_dir / fmt::format("title/{:08x}/{:08x}", title_id >> 32, title_id & 0xFFFFFFFF),
+                                       std::filesystem::copy_options::overwrite_existing | std::filesystem::copy_options::recursive);
+            };
+            
+            std::filesystem::create_directories(content_dir / "ro/sys");
+            std::filesystem::create_directories(content_dir / "rw/sys");
+            std::filesystem::create_directories(content_dir / "twlp");
+            
+            // Common titles for all regions
+            for (const uint64_t& common_sysdata_tid : common_sysdata_title_ids) {
+                copy_title(common_sysdata_tid);
+            }
+            
+            copy_title(nver_title_ids[Meta::to_underlying(sysregion)]);
+            copy_title(system_font_title_ids[Meta::to_underlying(sysregion)]);
+            if (!had_eula) {
+                copy_title(eula_title_ids[Meta::to_underlying(sysregion)]);
+            }
+    
+            // Create dummy HWCAL0, required for cfg module to work without running initial system setup first
+            char zero[128]{};
+            {
+                std::ofstream hwcal0(content_dir / "ro/sys/HWCAL0.dat");
+                const auto size = 2512;
+                for (unsigned i = 0; i < size / sizeof(zero); ++i) {
+                    hwcal0.write(zero, sizeof(zero));
+                }
+                hwcal0.write(zero, size % sizeof(zero));
+            }
+    
+            // Dump "logo" to have one for the 3DSX -> Gamecard adaptor
+            {
+                auto cxi_partition = gamecard->GetPartitionFromId(Loader::NCSDPartitionId::Executable);
+                if (!cxi_partition) {
+                    throw std::runtime_error("Could not find executable partition in gamecard image");
+                }
+                auto [cxi_open_res] = (*cxi_partition)->OpenReadOnly(file_context);
+    
+                if (cxi_open_res != HLE::OS::RESULT_OK) {
+                    throw std::runtime_error("Could not open executable partition of gamecard image");
+                }
+    
+                static constexpr const std::array<uint8_t, 8> logo_section_name = { 'l', 'o', 'g', 'o' };
+                auto logo_section = HLE::PXI::FS::NCCHOpenExeFSSection(*frontend_logger, file_context, keydb, std::move(*cxi_partition), 2, std::basic_string_view<uint8_t>(logo_section_name.data(), logo_section_name.size()));
+    
+                std::ofstream logo_file(settings.get<Settings::PathDataDir>() + "/placeholder_logo.bin", std::ios::binary);
+    
+                auto [res, logosize] = logo_section->GetSize(file_context);
+                if (res != HLE::OS::RESULT_OK || !logosize) {
+                    throw std::runtime_error("Could not get size of logo section in gamecart executable partition");
+                }
+    
+                std::vector<char> logobuf(logosize);
+                auto read_res = logo_section->Read(file_context, 0, logosize, HLE::PXI::FS::FileBufferInHostMemory(logobuf.data(), logosize));
+                if (read_res != std::tuple{ HLE::OS::RESULT_OK, logosize }) {
+                    throw std::runtime_error("Could not read logo section in gamecart executable partition");
+                }
+                logo_file.write(logobuf.data(), logosize);
+            }
+    
+            // Set up dummy rw/sys/SecureInfo_A with region based on CVer title ID
+            {
+                std::ofstream info(content_dir / "rw/sys/SecureInfo_A");
+                info.write(zero, sizeof(zero));
+                info.write(zero, sizeof(zero));
+                info.write(&reinterpret_cast<char&>(sysregion), 1);
+                info.write(zero, 0x10);
+            }
+    
+            // TODO: Set up shared font
+            // TODO: Set up GPIO
+        } catch (std::runtime_error&) {
+            throw;
         }
-
-        // Copy substitute titles
-        std::filesystem::copy(  settings.get<Settings::PathImmutableDataDir>() + "/nand/title", content_dir,
-                                std::filesystem::copy_options::skip_existing | std::filesystem::copy_options::recursive);
-
-        std::filesystem::create_directories(content_dir / "ro/sys");
-        std::filesystem::create_directories(content_dir / "rw/sys");
-        std::filesystem::create_directories(content_dir / "twlp");
-
-        // Create dummy HWCAL0, required for cfg module to work without running initial system setup first
-        char zero[128]{};
-        {
-            std::ofstream hwcal0(content_dir / "ro/sys/HWCAL0.dat");
-            const auto size = 2512;
-            for (unsigned i = 0; i < size / sizeof(zero); ++i) {
-                hwcal0.write(zero, sizeof(zero));
-            }
-            hwcal0.write(zero, size % sizeof(zero));
-        }
-
-        // Dump "logo" to have one for the 3DSX -> Gamecard adaptor
-        {
-            auto cxi_partition = gamecard->GetPartitionFromId(Loader::NCSDPartitionId::Executable);
-            if (!cxi_partition) {
-                throw std::runtime_error("Could not find executable partition in gamecard image");
-            }
-            auto [cxi_open_res] = (*cxi_partition)->OpenReadOnly(file_context);
-
-            if (cxi_open_res != HLE::OS::RESULT_OK) {
-                throw std::runtime_error("Could not open executable partition of gamecard image");
-            }
-
-            static constexpr const std::array<uint8_t, 8> logo_section_name = { 'l', 'o', 'g', 'o' };
-            auto logo_section = HLE::PXI::FS::NCCHOpenExeFSSection(*frontend_logger, file_context, keydb, std::move(*cxi_partition), 2, std::basic_string_view<uint8_t>(logo_section_name.data(), logo_section_name.size()));
-
-            std::ofstream logo_file(settings.get<Settings::PathDataDir>() + "/placeholder_logo.bin", std::ios::binary);
-
-            auto [res, logosize] = logo_section->GetSize(file_context);
-            if (res != HLE::OS::RESULT_OK || !logosize) {
-                throw std::runtime_error("Could not get size of logo section in gamecart executable partition");
-            }
-
-            std::vector<char> logobuf(logosize);
-            auto read_res = logo_section->Read(file_context, 0, logosize, HLE::PXI::FS::FileBufferInHostMemory(logobuf.data(), logosize));
-            if (read_res != std::tuple{ HLE::OS::RESULT_OK, logosize }) {
-                throw std::runtime_error("Could not read logo section in gamecart executable partition");
-            }
-            logo_file.write(logobuf.data(), logosize);
-        }
-
-        // Set up dummy rw/sys/SecureInfo_A with region EU
-        // TODO: Let the user select the region
-        {
-            std::ofstream info(content_dir / "rw/sys/SecureInfo_A");
-            info.write(zero, sizeof(zero));
-            info.write(zero, sizeof(zero));
-            char region = 2; // Europe
-            info.write(&region, 1);
-            info.write(zero, 0x10);
-        }
-
-        // TODO: Set up shared font
-        // TODO: Set up GPIO
-    } catch (std::runtime_error&) {
-        throw;
     }
 
     // Initialize SDL

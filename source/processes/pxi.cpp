@@ -119,9 +119,8 @@ FakePXI::FakePXI(FakeThread& thread)
     Context context;
 
     // Search for installed NAND titles
-    // TODO: Move titles to ./data/title
     {
-        std::filesystem::path base_path = GetRootDataDirectory(os.settings);
+        std::filesystem::path base_path = GetRootDataDirectory(os.settings) / "title";
 
         auto parse_title_id_part = [](const std::string& filename) -> std::optional<uint32_t> {
             // Expect an 8-digit zero-padded hexadecimal number
@@ -275,17 +274,7 @@ FileFormat::ExHeader GetExtendedHeader(Thread& thread, const Platform::FS::Progr
         // TODO: The following should perhaps be done in the PXIFS subsystem instead
         // TODO: The content ID is hardcoded currently.
         uint32_t content_id = 0;
-        const std::string filename = Meta::invoke([&] {
-            std::stringstream filename;
-            filename << GetRootDataDirectory(thread.GetOS().settings).string();
-            filename << std::hex << std::setw(8) << std::setfill('0') << (title_info.program_id >> 32);
-            filename << "/";
-            filename << std::hex << std::setw(8) << std::setfill('0') << (title_info.program_id & 0xFFFFFFFF);
-            filename << "/content/";
-            filename << std::hex << std::setw(8) << std::setfill('0') << content_id;
-            filename << ".cxi";
-            return filename.str();
-        });
+        const std::string filename = (GetRootDataDirectory(thread.GetOS().settings) / fmt::format("title/{:08x}/{:08x}/content/{:08x}.cxi", title_info.program_id >> 32, title_info.program_id & 0xFFFFFFFF, content_id)).string();
 
         thread.GetLogger()->info("{}Opening \"{}\" to get the extended header", ThreadPrinter{thread}, filename);
         std::ifstream input_file;
@@ -404,6 +393,7 @@ static std::tuple<Result> PMGetExtendedHeader(FakeThread& thread, Context& conte
     return std::make_tuple(RESULT_OK);
 }
 
+
 static std::tuple<Result, PMProgramHandle> PMRegisterProgram(FakeThread& thread, Context& context, PM::ProgramInfo title_info, PM::ProgramInfo update_info) {
     thread.GetLogger()->info("{}received RegisterProgram with title_info={}, update_info={}; attempting to assign internal program handle {:#x}",
                              ThreadPrinter{thread}, title_info, update_info, context.next_program_handle.value);
@@ -421,6 +411,10 @@ static std::tuple<Result, PMProgramHandle> PMRegisterProgram(FakeThread& thread,
     context.next_program_handle.value++;
 
     return std::make_tuple(RESULT_OK, map_entry.first->first);
+}
+
+static std::tuple<Result, PMProgramHandle> PMLegacyRegisterProgram(FakeThread& thread, Context& context, PM::ProgramInfo title_info) {
+    return PMRegisterProgram(thread, context, title_info, PM::ProgramInfo{});
 }
 
 static std::tuple<Result> PMUnregisterProgram(FakeThread& thread, Context& context, PMProgramHandle program_handle) {
@@ -443,7 +437,11 @@ static void PXIPMCommandHandler(FakeThread& thread, Context& context, const IPC:
         return IPC::HandleIPCCommand<PM::GetExtendedHeader>(PMGetExtendedHeader, thread, thread, context);
 
     case PM::RegisterProgram::id:
-        return IPC::HandleIPCCommand<PM::RegisterProgram>(PMRegisterProgram, thread, thread, context);
+        if (header.raw == PM::LegacyRegisterProgram::request_header) {
+            return IPC::HandleIPCCommand<PM::LegacyRegisterProgram>(PMLegacyRegisterProgram, thread, thread, context);
+        }
+        else
+            return IPC::HandleIPCCommand<PM::RegisterProgram>(PMRegisterProgram, thread, thread, context);
 
     case PM::UnregisterProgram::id:
         return IPC::HandleIPCCommand<PM::UnregisterProgram>(PMUnregisterProgram, thread, thread, context);

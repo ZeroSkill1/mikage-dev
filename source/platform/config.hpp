@@ -13,6 +13,18 @@ namespace Config {
 // Lots of these commands are shared between cfg:u, cfg:i, and cfg:s, hence we
 // make no effort to separating them into different namespaces
 
+enum class SystemRegion : uint8_t {
+	JPN = 0,
+	USA = 1,
+	EUR = 2,
+	AUS = 3,
+	CHN = 4,
+	KOR = 5,
+	TWN = 6,
+	
+	Invalid = 0xff,
+};
+
 using GetConfigInfoBlk2 = Platform::IPC::IPCCommand<0x1>::add_uint32::add_uint32::add_buffer_mapping_write
                                        ::response;
 

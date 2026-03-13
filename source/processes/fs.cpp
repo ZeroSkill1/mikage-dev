@@ -103,17 +103,7 @@ public:
         if (program_info.media_type == 0) {
             // TODO: The content ID is hardcoded currently.
             uint32_t content_id = 0;
-            filename = [&]() -> std::string {
-                std::stringstream filename;
-                filename << GetRootDataDirectory(context.settings).string() << "/";
-                filename << std::hex << std::setw(8) << std::setfill('0') << (program_info.program_id >> 32);
-                filename << "/";
-                filename << std::hex << std::setw(8) << std::setfill('0') << (program_info.program_id & 0xFFFFFFFF);
-                filename << "/content/";
-                filename << std::hex << std::setw(8) << std::setfill('0') << content_id;
-                filename << ".cxi";
-                return filename.str();
-            }();
+            filename = (GetRootDataDirectory(context.settings) / fmt::format("title/{:08x}/{:08x}/content/{:08x}.cxi", program_info.program_id >> 32, program_info.program_id & 0xFFFFFFFF, content_id)).string();
             ncch.exceptions(std::ifstream::badbit | std::ifstream::failbit | std::ifstream::eofbit);
             ncch.open(filename);
             auto ncch_start = ncch.tellg();

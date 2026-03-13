@@ -211,6 +211,9 @@ using RegisterProgram = IPC::IPCCommand<0x2>::add_serialized<ProgramInfo>::add_s
 
 using UnregisterProgram = IPC::IPCCommand<0x3>::add_serialized<ProgramHandle>
                              ::response;
+                             
+using LegacyRegisterProgram = IPC::IPCCommand<0x2>::add_serialized<ProgramInfo>
+                            ::response::add_serialized<ProgramHandle>;
 
 } // namespace PM
 
